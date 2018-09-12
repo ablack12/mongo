@@ -1228,6 +1228,14 @@ Status OptionsParser::readConfigFile(const std::string& filename, std::string* c
         return Status(ErrorCodes::InternalError, sb.str());
     }
     long configSize = ftell(config);
+    // If negative size, then we have a directory so we fail
+    if (configSize < 0) {
+        //Note: not convinced errno is going to be helpful her
+        const int current_errno = errno;
+        StringBuilder sb;
+        sb << "Error seeking in config file: " << strerror(current_errno);
+        return Status(ErrorCodes::InternalError, sb.str());
+    }
 
     // Seek back to the beginning of the file for reading
     if (fseek(config, 0L, SEEK_SET) != 0) {
