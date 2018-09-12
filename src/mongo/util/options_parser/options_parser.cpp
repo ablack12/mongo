@@ -1,39 +1,52 @@
 /* Copyright 2013 10gen Inc.
- *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
- *
- *    This program is distributed in the hope that it will be useful,
- *    but WITHOUT ANY WARRANTY; without even the implied warranty of
- *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
- *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
- *
- *    As a special exception, the copyright holders give permission to link the
- *    code of portions of this program with the OpenSSL library under certain
- *    conditions as described in each individual source file and distribute
- *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects
- *    for all of the code used other than as permitted herein. If you modify
- *    file(s) with this exception, you may extend this exception to your
- *    version of the file(s), but you are not obligated to do so. If you do not
- *    wish to do so, delete this exception statement from your version. If you
- *    delete this exception statement from all source files in the program,
- *    then also delete it in the license file.
- */
+*
+*    This program is free software: you can redistribute it and/or  modify
+*    it under the terms of the GNU Affero General Public License, version 3,
+*    as published by the Free Software Foundation.
+*
+*    This program is distributed in the hope that it will be useful,
+*    but WITHOUT ANY WARRANTY; without even the implied warranty of
+*    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+*    GNU Affero General Public License for more details.
+*
+*    You should have received a copy of the GNU Affero General Public License
+*    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+*
+*    As a special exception, the copyright holders give permission to link the
+*    code of portions of this program with the OpenSSL library under certain
+*    conditions as described in each individual source file and distribute
+*    linked combinations including the program with the OpenSSL library. You
+*    must comply with the GNU Affero General Public License in all respects
+*    for all of the code used other than as permitted herein. If you modify
+*    file(s) with this exception, you may extend this exception to your
+*    version of the file(s), but you are not obligated to do so. If you do not
+*    wish to do so, delete this exception statement from your version. If you
+*    delete this exception statement from all source files in the program,
+*    then also delete it in the license file.
+*/
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kControl
+
+#if defined(_WIN32) || defined(_WIN64)
+// copied from libc sys/stat.h
+#define S_ISREG(m) (((m)&S_IFMT) == S_IFREG)
+//#define open(path, oflag, ...) _open(path, oflag)
+//#define close(path) _close(path)
+#endif
 
 #include "mongo/util/options_parser/options_parser.h"
 
 #include <algorithm>
 #include <boost/program_options.hpp>
 #include <cerrno>
+#include <fcntl.h>
 #include <fstream>
+#if defined(_WIN32) || defined(_WIN64)
+#include <io.h>
+#endif
 #include <stdio.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <yaml-cpp/yaml.h>
 
 #include "mongo/base/init.h"
@@ -244,22 +257,22 @@ bool OptionIsStringMap(const std::vector<OptionDescription>& options_vector, con
 
 Status parseYAMLConfigFile(const std::string&, YAML::Node*);
 /* Searches a YAML node for configuration expansion directives such as:
- * __rest: https://example.com/path?query=val
- *
- * and optionally the fields `type` and `trim`.
- *
- * If the field pairing `trim: whitespace` is present,
- * then the process() method will have standard ctype spaces removed from
- * both the front end end of the returned value.
- *
- * If the field pairing `type: yaml` is present (valid only the top-level node)
- * then the process() method will parse any string provided to it as YAML.
- * If the field is not present, or is set to `string`, then process will
- * encapsulate any provided string in a YAML String Node.
- *
- * If no configuration expansion directive is found, the constructor will
- * uassert with ErrorCodes::NoSuchKey.
- */
+* __rest: https://example.com/path?query=val
+*
+* and optionally the fields `type` and `trim`.
+*
+* If the field pairing `trim: whitespace` is present,
+* then the process() method will have standard ctype spaces removed from
+* both the front end end of the returned value.
+*
+* If the field pairing `type: yaml` is present (valid only the top-level node)
+* then the process() method will parse any string provided to it as YAML.
+* If the field is not present, or is set to `string`, then process will
+* encapsulate any provided string in a YAML String Node.
+*
+* If no configuration expansion directive is found, the constructor will
+* uassert with ErrorCodes::NoSuchKey.
+*/
 class ConfigExpandNode {
 public:
     ConfigExpandNode(const YAML::Node& node,
@@ -454,12 +467,12 @@ std::string runYAMLRestExpansion(StringData url, Seconds timeout) {
 }
 
 /* Attempts to parse configuration expansion directives from a config block.
- *
- * If a __rest configuration expansion directive is found,
- * mongo::HttpClient will be invoked to fetch the resource via GET request.
- *
- * See the comment for class ConfigExpandNode for more details.
- */
+*
+* If a __rest configuration expansion directive is found,
+* mongo::HttpClient will be invoked to fetch the resource via GET request.
+*
+* See the comment for class ConfigExpandNode for more details.
+*/
 StatusWith<YAML::Node> runYAMLExpansion(const YAML::Node& node,
                                         const std::string& nodePath,
                                         const OptionsParser::ConfigExpand& configExpand) try {
@@ -994,10 +1007,10 @@ Status addConstraints(const OptionSection& options, Environment* dest) {
 }
 
 /**
- *  Remove any options of type "Switch" that are set to false.  This is needed because boost
- *  defaults switches to false, and we need to be able to tell the difference between
- *  whether an option is set explicitly to false in config files or not present at all.
- */
+*  Remove any options of type "Switch" that are set to false.  This is needed because boost
+*  defaults switches to false, and we need to be able to tell the difference between
+*  whether an option is set explicitly to false in config files or not present at all.
+*/
 Status removeFalseSwitches(const OptionSection& options, Environment* environment) {
     std::vector<OptionDescription> options_vector;
     Status ret = options.getAllOptions(&options_vector);
@@ -1034,13 +1047,13 @@ Status removeFalseSwitches(const OptionSection& options, Environment* environmen
 }  // namespace
 
 /**
- * This function delegates the command line parsing to boost program_options.
- *
- * 1. Extract the boost readable option descriptions and positional option descriptions from the
- * OptionSection
- * 2. Passes them to the boost command line parser
- * 3. Copy everything from the variables map returned by boost into the Environment
- */
+* This function delegates the command line parsing to boost program_options.
+*
+* 1. Extract the boost readable option descriptions and positional option descriptions from the
+* OptionSection
+* 2. Passes them to the boost command line parser
+* 3. Copy everything from the variables map returned by boost into the Environment
+*/
 Status OptionsParser::parseCommandLine(const OptionSection& options,
                                        const std::vector<std::string>& argv,
                                        Environment* environment) {
@@ -1119,12 +1132,12 @@ Status OptionsParser::parseCommandLine(const OptionSection& options,
 }
 
 /**
- * This function delegates the INI config parsing to boost program_options.
- *
- * 1. Extract the boost readable option descriptions from the OptionSection
- * 2. Passes them to the boost config file parser
- * 3. Copy everything from the variables map returned by boost into the Environment
- */
+* This function delegates the INI config parsing to boost program_options.
+*
+* 1. Extract the boost readable option descriptions from the OptionSection
+* 2. Passes them to the boost config file parser
+* 3. Copy everything from the variables map returned by boost into the Environment
+*/
 Status OptionsParser::parseINIConfigFile(const OptionSection& options,
                                          const std::string& config,
                                          Environment* environment) {
@@ -1159,9 +1172,9 @@ Status OptionsParser::parseINIConfigFile(const OptionSection& options,
 namespace {
 
 /**
- * This function delegates the YAML config parsing to the third party YAML parser.  It does no
- * error checking other than the parse error checking done by the YAML parser.
- */
+* This function delegates the YAML config parsing to the third party YAML parser.  It does no
+* error checking other than the parse error checking done by the YAML parser.
+*/
 Status parseYAMLConfigFile(const std::string& config, YAML::Node* YAMLConfig) {
     try {
         *YAMLConfig = YAML::Load(config);
@@ -1199,8 +1212,8 @@ bool isYAMLConfig(const YAML::Node& config) {
 }  // namespace
 
 /**
- * Add default values from the given OptionSection to the given Environment
- */
+* Add default values from the given OptionSection to the given Environment
+*/
 Status OptionsParser::addDefaultValues(const OptionSection& options, Environment* environment) {
     std::map<Key, Value> defaultOptions;
 
@@ -1221,97 +1234,95 @@ Status OptionsParser::addDefaultValues(const OptionSection& options, Environment
 }
 
 /**
- * Reads the entire config file into the output string.  This was done this way because the JSON
- * parser only takes complete strings, and we were using that to parse the config file before.
- * We could redesign the parser to use some kind of streaming interface, but for now this is
- * simple and works for the current use case of config files which should be limited in size.
- */
+* Reads the entire config file into the output string.  This was done this way because the JSON
+* parser only takes complete strings, and we were using that to parse the config file before.
+* We could redesign the parser to use some kind of streaming interface, but for now this is
+* simple and works for the current use case of config files which should be limited in size.
+*/
 Status OptionsParser::readConfigFile(const std::string& filename, std::string* contents) {
-    FILE* config;
-    config = fopen(filename.c_str(), "r");
-    if (config == NULL) {
+    std::ifstream file;
+    file.open(filename.c_str());
+    if (file.fail()) {
         const int current_errno = errno;
         StringBuilder sb;
-        sb << "Error reading config file: " << strerror(current_errno);
-        return Status(ErrorCodes::InternalError, sb.str());
-    }
-    ON_BLOCK_EXIT(fclose, config);
-
-    // Get length of config file by seeking to the end and getting the cursor position
-    if (fseek(config, 0L, SEEK_END) != 0) {
-        const int current_errno = errno;
-        // TODO: Make sure errno is the correct way to do this
-        // Confirmed that errno gets set in Mac OSX, but not documented
-        StringBuilder sb;
-        sb << "Error seeking in config file: " << strerror(current_errno);
-        return Status(ErrorCodes::InternalError, sb.str());
-    }
-    long configSize = ftell(config);
-
-    // Seek back to the beginning of the file for reading
-    if (fseek(config, 0L, SEEK_SET) != 0) {
-        const int current_errno = errno;
-        // TODO: Make sure errno is the correct way to do this
-        // Confirmed that errno gets set in Mac OSX, but not documented
-        StringBuilder sb;
-        sb << "Error seeking in config file: " << strerror(current_errno);
+        sb << "Error opening config file: " << strerror(current_errno);
         return Status(ErrorCodes::InternalError, sb.str());
     }
 
-    // Read into a vector first since it's guaranteed to have contiguous storage
-    std::vector<char> configVector;
-    configVector.resize(configSize);
+    // check if it's a regular file
+    struct stat stbuf;
+    int fd;
+#if defined(_WIN32) || defined(_WIN64)
+    fd = _open(filename.c_str(), O_RDONLY, S_IREAD);
+#else
+    fd = open(filename.c_str(), O_RDONLY);
+#endif
+    if (fd == -1) {
+        const int current_errno = errno;
+        StringBuilder sb;
+        sb << "Error opening config file: " << strerror(current_errno);
+        return Status(ErrorCodes::InternalError, sb.str());
+    }
 
-    if (configSize > 0) {
-        long nread = 0;
-        while (!feof(config) && nread < configSize) {
-            nread = nread + fread(&configVector[nread], sizeof(char), configSize - nread, config);
-            if (ferror(config)) {
-                const int current_errno = errno;
-                // TODO: Make sure errno is the correct way to do this
-                StringBuilder sb;
-                sb << "Error reading in config file: " << strerror(current_errno);
-                return Status(ErrorCodes::InternalError, sb.str());
-            }
-        }
-        // Resize our config vector to the number of bytes we actually read
-        configVector.resize(nread);
+    //ON_BLOCK_EXIT(close, fd);
+    if ((fstat(fd, &stbuf) != 0) || !(S_ISREG(stbuf.st_mode))) {
+        StringBuilder sb;
+        sb << "Error opening config file: " << strerror(EISDIR);
+        return Status(ErrorCodes::InternalError, sb.str());
+    }
+
+    // Transfer data to a stringstream
+    std::stringstream config;
+    std::size_t configSize;
+    std::string configString;
+    try {
+        config << file.rdbuf();
+        configSize = file.rdbuf()->pubseekoff(0, file.end, file.in);
+        configString = config.str();
+    } catch (const std::exception& e) {
+        StringBuilder sb;
+        sb << "Error reading in config file: " << e.what();
+        return Status(ErrorCodes::InternalError, sb.str());
     }
 
     // Config files cannot have null bytes
-    if (end(configVector) != std::find(begin(configVector), end(configVector), '\0')) {
+    if (std::count(configString.begin(), configString.end(), '\0') > 0) {
 
 #if defined(_WIN32)
         // On Windows, it is common for files to be saved by Notepad as UTF-16 with a BOM so convert
         // it for the user. If the file lacks a BOM, but is UTF-16 encoded we will fail rather then
         // try to guess the file encoding.
+        log() << "Windows machine";
         const std::array<unsigned char, 2> UTF16LEBOM = {0xff, 0xfe};
-        if (configVector.size() >= UTF16LEBOM.size() &&
-            memcmp(configVector.data(), UTF16LEBOM.data(), UTF16LEBOM.size()) == 0) {
-            auto wstr = std::wstring(configVector.begin() + 2, configVector.end());
+        if (configSize >= UTF16LEBOM.size() &&
+            memcmp(configString.c_str(), UTF16LEBOM.data(), UTF16LEBOM.size()) == 0) {
+            log() << "Can transform -- okay!";
+            // Why do we do +2? Is that the right move?
+            // auto wstr = std::wstring(configVector.begin() + 2, configVector.end());
+            auto wstr = std::wstring(configString.begin() + 2, configString.end());
             *contents = toUtf8String(wstr);
             return Status::OK();
         }
 #endif
-
+        log() << "erroring!";
         return Status(
             ErrorCodes::FailedToParse,
             "Config file has null bytes, ensure the file is saved as UTF-8 and not UTF-16.");
     }
-
     // Copy the vector contents into our result string
-    *contents = std::string(configVector.begin(), configVector.end());
+    log() << "no error! returning!";
+    *contents = configString;
     return Status::OK();
 }
 
 namespace {
 /**
- * Find implicit options and merge them with "=".
- * Implicit options in boost 1.59 no longer support
- * --option value
- * instead they only support "--option=value", this function
- * attempts to workound this by translating the former into the later.
- */
+* Find implicit options and merge them with "=".
+* Implicit options in boost 1.59 no longer support
+* --option value
+* instead they only support "--option=value", this function
+* attempts to workound this by translating the former into the later.
+*/
 StatusWith<std::vector<std::string>> transformImplictOptions(
     const OptionSection& options, const std::vector<std::string>& argvOriginal) {
     if (argvOriginal.empty()) {
@@ -1524,17 +1535,17 @@ StatusWith<OptionsParser::ConfigExpand> parseConfigExpand(const Environment& cli
 }
 
 /**
- * Run the OptionsParser
- *
- * Overview:
- *
- * 1. Parse argc and argv using the given OptionSection as a description of expected options
- * 2. Check for a "config" argument
- * 3. If "config" found, read config file
- * 4. Detect config file type (YAML or INI)
- * 5. Parse config file using the given OptionSection as a description of expected options
- * 6. Add the results to the output Environment in the proper order to ensure correct precedence
- */
+* Run the OptionsParser
+*
+* Overview:
+*
+* 1. Parse argc and argv using the given OptionSection as a description of expected options
+* 2. Check for a "config" argument
+* 3. If "config" found, read config file
+* 4. Detect config file type (YAML or INI)
+* 5. Parse config file using the given OptionSection as a description of expected options
+* 6. Add the results to the output Environment in the proper order to ensure correct precedence
+*/
 Status OptionsParser::run(const OptionSection& options,
                           const std::vector<std::string>& argvOriginal,
                           const std::map<std::string, std::string>& env,  // XXX: Currently unused
