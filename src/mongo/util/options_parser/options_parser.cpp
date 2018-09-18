@@ -1264,6 +1264,7 @@ Status OptionsParser::readConfigFile(const std::string& filename, std::string* c
         return Status(ErrorCodes::InternalError, sb.str());
     }
 
+
     //ON_BLOCK_EXIT(close, fd);
     if ((fstat(fd, &stbuf) != 0) || !(S_ISREG(stbuf.st_mode))) {
         StringBuilder sb;
