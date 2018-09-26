@@ -152,6 +152,9 @@ private:
                                                  const HostAndPort& peer,
                                                  const Milliseconds& timeout);
 
+    template <typename State>
+    Future<void> _asyncResolveImpl(State connector, ConnectSSLMode sslMode);
+
 #ifdef MONGO_CONFIG_SSL
     SSLParams::SSLModes _sslMode() const;
 #endif

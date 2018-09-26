@@ -300,8 +300,12 @@ public:
         //
         // Then, if the numeric (IP address) lookup failed, we fall back to DNS or return the error
         // from the resolver.
+        log() << "Inside resolve!!";
         return _resolve(peer, flags | Resolver::numeric_host, enableIPv6)
-            .onError([=](Status) { return _resolve(peer, flags, enableIPv6); })
+            .onError([=](Status) {
+                log() << "DNS ATTEMPT BEGINS";
+                return _resolve(peer, flags, enableIPv6);
+            })
             .getNoThrow();
     }
 
@@ -314,6 +318,7 @@ public:
         // function for setting resolver flags (see above).
         const auto flags = Resolver::numeric_service;
         return _asyncResolve(peer, flags | Resolver::numeric_host, enableIPv6).onError([=](Status) {
+            log() << "DNS ASYNC ATTEMPT BEGINS";
             return _asyncResolve(peer, flags, enableIPv6);
         });
     }
@@ -354,8 +359,10 @@ private:
         auto port = std::to_string(peer.port());
         Future<Results> ret;
         if (enableIPv6) {
+            log() << "async enableIPv6";
             ret = _resolver.async_resolve(peer.host(), port, flags, UseFuture{});
         } else {
+            log() << "async IPv4";
             ret =
                 _resolver.async_resolve(asio::ip::tcp::v4(), peer.host(), port, flags, UseFuture{});
         }
@@ -411,44 +418,53 @@ StatusWith<SessionHandle> TransportLayerASIO::connect(HostAndPort peer,
     std::error_code ec;
     GenericSocket sock(*_egressReactor);
     WrappedResolver resolver(*_egressReactor);
-
+    log() << "Inside connect (transportLayerASIO)";
     auto swEndpoints = resolver.resolve(peer, _listenerOptions.enableIPv6);
     if (!swEndpoints.isOK()) {
         return swEndpoints.getStatus();
     }
-
     auto endpoints = std::move(swEndpoints.getValue());
-    auto sws = _doSyncConnect(endpoints.front(), peer, timeout);
-    if (!sws.isOK()) {
-        return sws.getStatus();
-    }
-
-    auto session = std::move(sws.getValue());
-    session->ensureSync();
+    while (!endpoints.empty()) {
+        log() << "current endpoint is " << endpoints.front();
+        auto sws = _doSyncConnect(endpoints.front(), peer, timeout);
+        if (!sws.isOK()) {
+            endpoints.erase(endpoints.begin());
+            log() << "Not okay, size is " << endpoints.size();
+            if (endpoints.empty()) {  // last element
+                log() << "Last element, returning error";
+                return sws.getStatus();
+            }
+            continue;
+        }
+        log() << "We're okay!";
+        auto session = std::move(sws.getValue());
+        session->ensureSync();
 
 #ifndef _WIN32
-    if (endpoints.front().family() == AF_UNIX) {
-        return static_cast<SessionHandle>(std::move(session));
-    }
+        if (endpoints.front().family() == AF_UNIX) {
+            return static_cast<SessionHandle>(std::move(session));
+        }
 #endif
 
 #ifndef MONGO_CONFIG_SSL
-    if (sslMode == kEnableSSL) {
-        return {ErrorCodes::InvalidSSLConfiguration, "SSL requested but not supported"};
-    }
-#else
-    auto globalSSLMode = _sslMode();
-    if (sslMode == kEnableSSL ||
-        (sslMode == kGlobalSSLMode && ((globalSSLMode == SSLParams::SSLMode_preferSSL) ||
-                                       (globalSSLMode == SSLParams::SSLMode_requireSSL)))) {
-        auto sslStatus = session->handshakeSSLForEgress(peer).getNoThrow();
-        if (!sslStatus.isOK()) {
-            return sslStatus;
+        if (sslMode == kEnableSSL) {
+            return {ErrorCodes::InvalidSSLConfiguration, "SSL requested but not supported"};
         }
-    }
+#else
+        auto globalSSLMode = _sslMode();
+        if (sslMode == kEnableSSL ||
+            (sslMode == kGlobalSSLMode && ((globalSSLMode == SSLParams::SSLMode_preferSSL) ||
+                                           (globalSSLMode == SSLParams::SSLMode_requireSSL)))) {
+            auto sslStatus = session->handshakeSSLForEgress(peer).getNoThrow();
+            if (!sslStatus.isOK()) {
+                return sslStatus;
+            }
+        }
 #endif
-
-    return static_cast<SessionHandle>(std::move(session));
+        return static_cast<SessionHandle>(std::move(session));
+    }
+    log() << "I don't know why we would get here but we need something for now";
+    return swEndpoints.getStatus();
 }
 
 template <typename Endpoint>
@@ -514,8 +530,10 @@ Future<SessionHandle> TransportLayerASIO::asyncConnect(HostAndPort peer,
         stdx::mutex mutex;
         GenericSocket socket;
         ASIOReactorTimer timeoutTimer;
+
         WrappedResolver resolver;
         WrappedEndpoint resolvedEndpoint;
+        WrappedResolver::EndpointVector currentEndpoints;
         const HostAndPort peer;
         TransportLayerASIO::ASIOSessionHandle session;
     };
@@ -553,26 +571,57 @@ Future<SessionHandle> TransportLayerASIO::asyncConnect(HostAndPort peer,
             });
     }
 
-    connector->resolver.asyncResolve(connector->peer, _listenerOptions.enableIPv6)
+    _asyncResolveImpl(connector, sslMode).getAsync([connector](Status connectResult) {
+        log() << "in getAsync";
+        if (MONGO_FAIL_POINT(transportLayerASIOasyncConnectTimesOut)) {
+            log() << "asyncConnectTimesOut fail point is active. simulating timeout.";
+            return;
+        }
+        if (connector->done.swap(true)) {
+            return;
+        }
+        connector->timeoutTimer.cancel();
+        if (connectResult.isOK()) {
+            connector->promise.emplaceValue(std::move(connector->session));
+        } else {
+            connector->promise.setError(connectResult);
+        }
+    });
+    return mergedFuture;
+}
+
+template <typename State>
+Future<void> TransportLayerASIO::_asyncResolveImpl(State connector, ConnectSSLMode sslMode) {
+    log() << "In the NEW ASYNC CALL";
+    return connector->resolver.asyncResolve(connector->peer, _listenerOptions.enableIPv6)
         .then([connector](WrappedResolver::EndpointVector results) {
             try {
                 stdx::lock_guard<stdx::mutex> lk(connector->mutex);
-
-                connector->resolvedEndpoint = results.front();
+                if (connector->currentEndpoints.empty()) {
+                    // NOTE: this is where we rearrange the addresses if necessary
+                    // results.push_back(results.front());
+                    // results.erase(results.begin());
+                    connector->currentEndpoints = results;
+                }
+                log() << "In the first then. Endpoints are: ";
+                for (unsigned i = 0; i < results.size(); i++)
+                    log() << results.at(i);
+                connector->resolvedEndpoint = connector->currentEndpoints.front();
+                log() << "Our endpoint is " << connector->resolvedEndpoint;
                 connector->socket.open(connector->resolvedEndpoint->protocol());
                 connector->socket.non_blocking(true);
             } catch (asio::system_error& ex) {
                 return futurize(ex.code());
             }
-
             return connector->socket.async_connect(*connector->resolvedEndpoint, UseFuture{});
         })
         .then([this, connector, sslMode]() -> Future<void> {
+            log() << "In the second then";
             stdx::unique_lock<stdx::mutex> lk(connector->mutex);
             connector->session =
                 std::make_shared<ASIOSession>(this, std::move(connector->socket), false);
             connector->session->ensureAsync();
-
+            log() << "THIS CALL DIDNT ERROR";
 #ifndef MONGO_CONFIG_SSL
             if (sslMode == kEnableSSL) {
                 uasserted(ErrorCodes::InvalidSSLConfiguration, "SSL requested but not supported");
@@ -587,31 +636,23 @@ Future<SessionHandle> TransportLayerASIO::asyncConnect(HostAndPort peer,
                     .then([connector] { return Status::OK(); });
             }
 #endif
+
             return Status::OK();
         })
-        .onError([connector](Status status) -> Future<void> {
-            return makeConnectError(status, connector->peer, connector->resolvedEndpoint);
-        })
-        .getAsync([connector](Status connectResult) {
-            if (MONGO_FAIL_POINT(transportLayerASIOasyncConnectTimesOut)) {
-                log() << "asyncConnectTimesOut fail point is active. simulating timeout.";
-                return;
-            }
-
-            if (connector->done.swap(true)) {
-                return;
-            }
-
-            connector->timeoutTimer.cancel();
-            if (connectResult.isOK()) {
-                connector->promise.emplaceValue(std::move(connector->session));
+        // TODO:  on any error check for more endpoints...
+        .onError([this, connector, sslMode](Status status) -> Future<void> {
+            connector->currentEndpoints.erase(connector->currentEndpoints.begin());
+            if (connector->currentEndpoints.empty()) {  // Tried all endpoints
+                log() << "Tried all endpoints";
+                return makeConnectError(status, connector->peer, connector->resolvedEndpoint);
             } else {
-                connector->promise.setError(connectResult);
+                // NOTE: Recursive part
+                log() << "This is where we want to recursively call, should go into then";
+                return _asyncResolveImpl(connector, sslMode);
             }
         });
-
-    return mergedFuture;
 }
+
 
 Status TransportLayerASIO::setup() {
     std::vector<std::string> listenAddrs;
@@ -644,7 +685,7 @@ Status TransportLayerASIO::setup() {
             warning() << "Skipping empty bind address";
             continue;
         }
-
+        log() << "Inside setup! (TransportLayerASIO)";
         auto swAddrs =
             resolver.resolve(HostAndPort(ip, _listenerPort), _listenerOptions.enableIPv6);
         if (!swAddrs.isOK()) {
@@ -652,8 +693,8 @@ Status TransportLayerASIO::setup() {
             continue;
         }
         auto& addrs = swAddrs.getValue();
-
         for (auto& addr : addrs) {
+            log() << "addr in addrs is " << addr;
 #ifndef _WIN32
             if (addr.family() == AF_UNIX) {
                 if (::unlink(addr.toString().c_str()) == -1 && errno != ENOENT) {
